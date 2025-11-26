@@ -18,6 +18,7 @@ import pytest
 
 def test_root_endpoint(client):
     """
+    thrr
     EXEMPLE : Tester un point de terminaison GET simple.
 
     Ce test vous montre le pattern de base :
