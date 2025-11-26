@@ -206,36 +206,35 @@ async def create_task(task_data: TaskCreate) -> Task:
 
 @app.put("/tasks/{task_id}", response_model=Task)
 async def update_task(task_id: int, updates: TaskUpdate) -> Task:
-    """
-    Update an existing task (partial update supported).
+    # 1) Vérifier l'existence
+    if task_id not in tasks_db:
+        raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
 
-    TODO (Atelier 1 - Exercice 2): Implémenter cette fonction
+    # 2) Récupérer la tâche existante
+    existing_task: Task = tasks_db[task_id]
 
-    Étapes à suivre:
-    1. Vérifier que la tâche existe dans tasks_db
-       - Si elle n'existe pas, lever HTTPException(status_code=404, detail=f"Task {task_id} not found")
+    # 3) Champs fournis (partial update)
+    update_data = updates.model_dump(exclude_unset=True)
 
-    2. Récupérer la tâche existante
+    # 4) Valider le titre s'il est fourni
+    if "title" in update_data and (update_data["title"] is None or str(update_data["title"]).strip() == ""):
+        raise HTTPException(status_code=422, detail="Title cannot be empty")
 
-    3. Extraire les champs à mettre à jour avec updates.model_dump(exclude_unset=True)
+    # 5) Construire la nouvelle tâche (en gardant created_at)
+    updated_task = Task(
+        id=task_id,
+        title=update_data.get("title", existing_task.title),
+        description=update_data.get("description", existing_task.description),
+        status=update_data.get("status", existing_task.status),
+        created_at=existing_task.created_at,
+        updated_at=datetime.utcnow(),
+    )
 
-    4. Valider le titre s'il est fourni (ne doit pas être vide)
-       - Si vide, lever HTTPException(status_code=422, detail="Title cannot be empty")
+    # 6) Persister
+    tasks_db[task_id] = updated_task
 
-    5. Créer une nouvelle Task avec:
-       - Les champs mis à jour (utiliser update_data.get("field", existing_task.field))
-       - created_at = existing_task.created_at (ne change pas)
-       - updated_at = datetime.utcnow() (nouvelle date)
-
-    6. Mettre à jour tasks_db[task_id]
-
-    7. Retourner la tâche mise à jour
-
-    Indice: Regardez comment create_task fonctionne pour vous inspirer
-    """
-    # TODO: Votre code ici
-    raise HTTPException(status_code=501, detail="Update not implemented yet - complete this function!")
-
+    # 7) Retourner
+    return updated_task
 
 @app.delete("/tasks/{task_id}", status_code=204)
 async def delete_task(task_id: int):
