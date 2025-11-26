@@ -18,7 +18,6 @@ import pytest
 
 def test_root_endpoint(client):
     """
-    thrr
     EXEMPLE : Tester un point de terminaison GET simple.
 
     Ce test vous montre le pattern de base :
@@ -37,7 +36,7 @@ def test_root_endpoint(client):
 def test_health_check(client):
     response = client.get("/health")
     assert response.status_code == 200
-    assert response.json()["status"] == "healthy"  # ✅ Correct
+    assert response.json()["status"] == "BROKEN"  # ❌ Bug volontaire
 
 def test_create_task(client):
     """
