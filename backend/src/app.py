@@ -7,12 +7,21 @@ TP 1 & 2: Uses in-memory storage for simplicity
 TP 3: Will introduce PostgreSQL database (see migration guide)
 """
 
-from typing import List, Optional, Dict
+from typing import List, Optional
 from datetime import datetime
-from enum import Enum
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Depends
 from pydantic import BaseModel, Field
 import logging
+
+from contextlib import asynccontextmanager
+import uuid
+from sqlalchemy.orm import Session
+from sqlalchemy import text
+from .database import get_db, init_db
+from .models import TaskModel, TaskStatus, TaskPriority
+
+from fastapi.middleware.cors import CORSMiddleware
+import os
 
 # Configure logging
 logging.basicConfig(
@@ -25,20 +34,6 @@ logger = logging.getLogger("taskflow")
 # =============================================================================
 # ENUMS & MODELS
 # =============================================================================
-
-class TaskStatus(str, Enum):
-    """Task status enum - simpler than SQLAlchemy version."""
-    TODO = "todo"
-    IN_PROGRESS = "in_progress"
-    DONE = "done"
-
-
-class TaskPriority(str, Enum):
-    """Task priority enum - simpler than SQLAlchemy version."""
-    LOW = "low"
-    MEDIUM = "medium"
-    HIGH = "high"
-
 
 class TaskCreate(BaseModel):
     """Model for creating a new task."""
@@ -60,41 +55,35 @@ class TaskUpdate(BaseModel):
     due_date: Optional[datetime] = None
 
 
-class Task(TaskCreate):
-    """Model for a task with ID and timestamps."""
-    id: int  # Integer ID instead of UUID string - simpler!
+class Task(BaseModel):
+    """Model for task response."""
+    id: str  # UUID stocké en string
+    title: str
+    description: Optional[str] = None
+    status: TaskStatus
+    priority: TaskPriority
+    assignee: Optional[str] = None
+    due_date: Optional[datetime] = None
     created_at: datetime
     updated_at: datetime
 
-
-# =============================================================================
-# IN-MEMORY STORAGE (for Atelier 1 & 2)
-# =============================================================================
-
-# Simple dictionary to store tasks
-# In Atelier 3, this will be replaced with PostgreSQL database
-tasks_db: Dict[int, Task] = {}
-next_id = 1
-
-
-def get_next_id() -> int:
-    """Get next available task ID."""
-    global next_id
-    current_id = next_id
-    next_id += 1
-    return current_id
-
-
-def clear_tasks():
-    """Clear all tasks - useful for testing."""
-    global tasks_db, next_id
-    tasks_db = {}
-    next_id = 1
+    class Config:
+        from_attributes = True  # Permet la conversion depuis SQLAlchemy
 
 
 # =============================================================================
 # FASTAPI APP
 # =============================================================================
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Lifecycle manager - initialise la DB au démarrage."""
+    logger.info("🚀 TaskFlow backend starting up...")
+    init_db()  # Crée les tables
+    logger.info("✅ Database initialized")
+    yield
+    logger.info("🛑 TaskFlow backend shutting down...")
+
 
 app = FastAPI(
     title="TaskFlow API",
@@ -102,21 +91,20 @@ app = FastAPI(
     version="1.0.0",
     docs_url="/docs",
     redoc_url="/redoc",
+    lifespan=lifespan
 )
 
+# ⚠️ IMPORTANT : Garder le middleware CORS après app = FastAPI(...)
+cors_origins_str = os.getenv("CORS_ORIGINS", "http://localhost:5173,http://localhost:3000")
+cors_origins = [origin.strip() for origin in cors_origins_str.split(",")]
 
-@app.on_event("startup")
-def startup():
-    """Simple startup - just log a message."""
-    logger.info("🚀 TaskFlow backend starting up...")
-    logger.info("Using in-memory storage (no database)")
-
-
-@app.on_event("shutdown")
-def shutdown():
-    """Simple shutdown - just log a message."""
-    logger.info("🛑 TaskFlow backend shutting down...")
-
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=cors_origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # =============================================================================
 # ENDPOINTS
@@ -131,134 +119,129 @@ async def root():
         "docs": "/docs"
     }
 
-
 @app.get("/health")
-async def health_check():
-    """Simple health check endpoint."""
+async def health_check(db: Session = Depends(get_db)):
+    try:
+        db.execute(text("SELECT 1"))
+        db_status = "connected"
+    except Exception:
+        db_status = "disconnected"
+
+    tasks_count = db.query(TaskModel).count()
+
     return {
         "status": "healthy",
-        "tasks_count": len(tasks_db)
+        "database": db_status,
+        "tasks_count": tasks_count
     }
-
 
 @app.get("/tasks", response_model=List[Task])
 async def get_tasks(
     status: Optional[TaskStatus] = None,
     priority: Optional[TaskPriority] = None,
-    assignee: Optional[str] = None
-) -> List[Task]:
-    """
-    Get all tasks with optional filtering.
+    assignee: Optional[str] = None,
+    db: Session = Depends(get_db)  # ← Toujours en dernier dans les paramètres
+):
+    """Get all tasks with optional filtering."""
+    query = db.query(TaskModel)
 
-    Query parameters:
-    - status: Filter by task status (todo, in_progress, done)
-    - priority: Filter by priority (low, medium, high)
-    - assignee: Filter by assignee email
-    """
-    tasks = list(tasks_db.values())
-
-    # Apply filters
     if status:
-        tasks = [t for t in tasks if t.status == status]
+        query = query.filter(TaskModel.status == status)
     if priority:
-        tasks = [t for t in tasks if t.priority == priority]
+        query = query.filter(TaskModel.priority == priority)
     if assignee:
-        tasks = [t for t in tasks if t.assignee == assignee]
+        query = query.filter(TaskModel.assignee == assignee)
 
-    return tasks
+    return query.all()
 
 
 @app.get("/tasks/{task_id}", response_model=Task)
-async def get_task(task_id: int) -> Task:
+async def get_task(task_id: str, db: Session = Depends(get_db)):
     """Get a single task by ID."""
-    if task_id not in tasks_db:
+    task = db.query(TaskModel).filter(TaskModel.id == task_id).first()
+    if not task:
         raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
-    return tasks_db[task_id]
+    return task
 
 
 @app.post("/tasks", response_model=Task, status_code=201)
-async def create_task(task_data: TaskCreate) -> Task:
+async def create_task(task_data: TaskCreate, db: Session = Depends(get_db)):
     """Create a new task."""
     # Validate title is not empty
     if not task_data.title or not task_data.title.strip():
         raise HTTPException(status_code=422, detail="Title cannot be empty")
 
-    # Create new task with auto-generated ID
-    task_id = get_next_id()
     now = datetime.utcnow()
 
-    task = Task(
-        id=task_id,
-        title=task_data.title,
+    # Création d'un TaskModel (pas Task) avec un UUID
+    task = TaskModel(
+        id=str(uuid.uuid4()),
+        title=task_data.title.strip(),
         description=task_data.description,
         status=task_data.status,
         priority=task_data.priority,
         assignee=task_data.assignee,
         due_date=task_data.due_date,
         created_at=now,
-        updated_at=now
+        updated_at=now,
     )
 
-    tasks_db[task_id] = task
-    logger.info(f"Task created successfully: {task_id}")
+    db.add(task)       # 1) Ajoute à la session
+    db.commit()        # 2) Sauvegarde en base
+    db.refresh(task)   # 3) Recharge les valeurs générées
+
+    logger.info(f"Task created successfully: {task.id}")
     return task
 
 
 @app.put("/tasks/{task_id}", response_model=Task)
-async def update_task(task_id: int, updates: TaskUpdate) -> Task:
+async def update_task(
+    task_id: str,
+    updates: TaskUpdate,
+    db: Session = Depends(get_db)
+):
+    """Update an existing task."""
     # 1) Vérifier l'existence
-    if task_id not in tasks_db:
+    task = db.query(TaskModel).filter(TaskModel.id == task_id).first()
+    if not task:
         raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
 
-    # 2) Récupérer la tâche existante
-    existing_task: Task = tasks_db[task_id]
-
-    # 3) Champs fournis (partial update)
+    # 2) Champs fournis (partial update)
     update_data = updates.model_dump(exclude_unset=True)
 
-    # 4) Valider le titre s'il est fourni
-    if "title" in update_data and (update_data["title"] is None or str(update_data["title"]).strip() == ""):
-        raise HTTPException(status_code=422, detail="Title cannot be empty")
+    # 3) Valider le titre s'il est fourni
+    if "title" in update_data:
+        new_title = update_data["title"]
+        if new_title is None or str(new_title).strip() == "":
+            raise HTTPException(status_code=422, detail="Title cannot be empty")
 
-    # 5) Construire la nouvelle tâche (en gardant created_at)
-    updated_task = Task(
-        id=task_id,
-        title=update_data.get("title", existing_task.title),
-        description=update_data.get("description", existing_task.description),
-        status=update_data.get("status", existing_task.status),
-        created_at=existing_task.created_at,
-        updated_at=datetime.utcnow(),
-    )
+    # 4) Appliquer les modifications sur le TaskModel
+    for field, value in update_data.items():
+        setattr(task, field, value)
 
-    # 6) Persister
-    tasks_db[task_id] = updated_task
+    # Mettre à jour updated_at si présent dans le modèle
+    if hasattr(task, "updated_at"):
+        task.updated_at = datetime.utcnow()
 
-    # 7) Retourner
-    return updated_task
+    db.commit()
+    db.refresh(task)
+
+    return task
+
 
 @app.delete("/tasks/{task_id}", status_code=204)
-async def delete_task(task_id: int):
+async def delete_task(task_id: str, db: Session = Depends(get_db)):
     """
     Delete a task by ID.
-
-    TODO (TP 1 - Exercice 1): Implémenter cette fonction
-
-    Étapes à suivre:
-    1. Vérifier que la tâche existe dans tasks_db
-       - Si elle n'existe pas, lever HTTPException(status_code=404, detail=f"Task {task_id} not found")
-
-    2. Supprimer la tâche du dictionnaire tasks_db
-       - Utiliser: del tasks_db[task_id]
-
-    3. Retourner None (car status_code=204 n'a pas de body)
-
-    Indice: C'est très simple, seulement 3 lignes de code !
     """
-    if task_id not in tasks_db:
+    task = db.query(TaskModel).filter(TaskModel.id == task_id).first()
+    if not task:
         raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
 
-    del tasks_db[task_id]
+    db.delete(task)
+    db.commit()
     return None
+
 
 if __name__ == "__main__":
     import uvicorn

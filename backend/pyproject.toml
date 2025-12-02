@@ -9,6 +9,8 @@ dependencies = [
     "pydantic>=2.5.0",
     "httpx>=0.25.2", # For external API calls
     # sqlalchemy and psycopg2-binary will be added in Atelier 3
+    "sqlalchemy>=2.0.44",
+    "psycopg2-binary>=2.9.11",
 ]
 
 [build-system]

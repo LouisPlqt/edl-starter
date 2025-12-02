@@ -80,12 +80,19 @@ describe('API Module', () => {
    *
    * Indice: Regardez le test "creates a new task" ci-dessus pour vous inspirer
    */
-  it.todo('deletes a task', async () => {
-    // TODO: Votre code ici
-    // 1. Mocker fetch pour retourner { ok: true, status: 204 }
-    // 2. Appeler await api.deleteTask(1)
-    // 3. Vérifier que fetch a été appelé avec '/tasks/1' et method: 'DELETE'
+it('deletes a task', async () => {
+  globalThis.fetch = vi.fn().mockResolvedValue({
+    ok: true,
+    status: 204,
   });
+
+  await api.deleteTask(1);
+
+  expect(fetch).toHaveBeenCalledWith('/api/tasks/1', {
+    method: 'DELETE',
+    headers: { 'Content-Type': 'application/json' },
+  });
+});
 
   /**
    * TODO (Atelier 1 - Exercice 7): Implémenter ce test
@@ -101,10 +108,27 @@ describe('API Module', () => {
    *
    * Indice: C'est similaire au test "creates a new task" mais avec PUT au lieu de POST
    */
-  it.todo('updates a task', async () => {
-    // TODO: Votre code ici
-    // 1. Mocker fetch pour retourner { ok: true, json: () => Promise.resolve({ id: 1, title: 'Updated Title', ... }) }
-    // 2. Appeler await api.updateTask(1, { title: 'Updated Title' })
-    // 3. Vérifier que fetch a été appelé avec '/tasks/1', method: 'PUT', et body contenant le titre
+it('updates a task', async () => {
+  // 1) Mock fetch → mise à jour réussie
+  const updated = { id: 1, title: 'Updated Title' };
+  globalThis.fetch = vi.fn().mockResolvedValue({
+    ok: true,
+    status: 200,
+    json: async () => updated,
   });
+
+  // 2) Appeler l’API
+  const result = await api.updateTask(1, { title: 'Updated Title' });
+
+  // 3) Vérifier l’appel (URL, méthode, headers, body)
+  expect(fetch).toHaveBeenCalledWith('/api/tasks/1', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ title: 'Updated Title' }),
+  });
+
+  // (optionnel) vérifier la valeur retournée
+  expect(result).toEqual(updated);
 });
+});
+
